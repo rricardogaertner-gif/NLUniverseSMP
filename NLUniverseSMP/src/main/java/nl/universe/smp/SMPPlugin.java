@@ -70,7 +70,41 @@ public final class SMPPlugin extends JavaPlugin implements Listener, CommandExec
     private boolean isSmp(World w){return w!=null && allowed.contains(w.getName());}
     private void configureWorlds(){for(String name:allowed){World w=Bukkit.getWorld(name);if(w==null)continue;w.setPVP(getConfig().getBoolean("pvp",true));WorldBorder border=w.getWorldBorder();border.setCenter(0,0);border.setSize(getConfig().getDouble("world-border-diameter",10000));}}
     private Location hub(){World w=Bukkit.getWorld(getConfig().getString("hub.world","hub"));if(w==null)return null;return new Location(w,getConfig().getDouble("hub.x",0.5),getConfig().getDouble("hub.y",80),getConfig().getDouble("hub.z",0.5),(float)getConfig().getDouble("hub.yaw",0),(float)getConfig().getDouble("hub.pitch",0));}
-    private Location start(){World w=Bukkit.getWorld(overworld());return w==null?null:w.getSpawnLocation().add(0.5,0,0.5);}
+    private boolean safeSmpLocation(Location loc) {
+        if (loc == null || loc.getWorld() == null || !isSmp(loc.getWorld())) return false;
+        World w = loc.getWorld();
+        if (!Double.isFinite(loc.getX()) || !Double.isFinite(loc.getY()) || !Double.isFinite(loc.getZ())) return false;
+        if (loc.getY() < w.getMinHeight() + 1 || loc.getY() >= w.getMaxHeight() - 2) return false;
+        if (!w.getWorldBorder().isInside(loc)) return false;
+        Block feet = loc.getBlock();
+        return feet.isPassable() && feet.getRelative(0, 1, 0).isPassable()
+            && feet.getRelative(0, -1, 0).getType().isSolid()
+            && !feet.isLiquid() && !feet.getRelative(0, 1, 0).isLiquid();
+    }
+    private Location start() {
+        World w = Bukkit.getWorld(overworld());
+        if (w == null) return null;
+        Location spawn = w.getSpawnLocation().clone().add(0.5, 0, 0.5);
+        if (safeSmpLocation(spawn)) return spawn;
+        // Search near the world-border center, never at an old out-of-border spawn.
+        for (int radius = 0; radius <= 128; radius += 8) {
+            for (int dx = -radius; dx <= radius; dx += 8) {
+                for (int dz = -radius; dz <= radius; dz += 8) {
+                    if (radius > 0 && Math.max(Math.abs(dx), Math.abs(dz)) != radius) continue;
+                    int x = dx, z = dz;
+                    if (!w.getWorldBorder().isInside(new Location(w, x + 0.5, 80, z + 0.5))) continue;
+                    int y = w.getHighestBlockYAt(x, z) + 1;
+                    Location candidate = new Location(w, x + 0.5, y, z + 0.5);
+                    if (safeSmpLocation(candidate)) {
+                        w.setSpawnLocation(candidate);
+                        return candidate;
+                    }
+                }
+            }
+        }
+        getLogger().severe("No safe SMP spawn found near 0,0; teleport blocked.");
+        return null;
+    }
     private void loadPlayers(){for(String id:state.getConfigurationSection("players")==null?Set.<String>of():state.getConfigurationSection("players").getKeys(false)){try{UUID u=UUID.fromString(id);String p="players."+id+".";long b=state.getLong(p+"ban",0);if(b>0)bans.put(u,b);kills.put(u,state.getInt(p+"kills",0));deaths.put(u,state.getInt(p+"deaths",0));survival.put(u,state.getLong(p+"survival",0));String worldName=state.getString(p+"last.world");World lw=worldName==null?null:Bukkit.getWorld(worldName);if(lw!=null&&isSmp(lw))last.put(u,new Location(lw,state.getDouble(p+"last.x"),state.getDouble(p+"last.y"),state.getDouble(p+"last.z"),(float)state.getDouble(p+"last.yaw"),(float)state.getDouble(p+"last.pitch")));}catch(IllegalArgumentException ignored){}}}
     private void saveState(){if(state==null)return;state.set("season-end",seasonEnd);for(UUID u:union()){String p="players."+u+".";state.set(p+"ban",bans.getOrDefault(u,0L));state.set(p+"kills",kills.getOrDefault(u,0));state.set(p+"deaths",deaths.getOrDefault(u,0));state.set(p+"survival",survival.getOrDefault(u,0L));Location loc=last.get(u);if(loc!=null){state.set(p+"last.world",loc.getWorld().getName());state.set(p+"last.x",loc.getX());state.set(p+"last.y",loc.getY());state.set(p+"last.z",loc.getZ());state.set(p+"last.yaw",loc.getYaw());state.set(p+"last.pitch",loc.getPitch());}}try{state.save(stateFile);}catch(IOException e){getLogger().severe("Failed saving state: "+e.getMessage());}}
     private Set<UUID> union(){Set<UUID> s=new HashSet<>(bans.keySet());s.addAll(kills.keySet());s.addAll(deaths.keySet());s.addAll(survival.keySet());s.addAll(last.keySet());return s;}
@@ -103,7 +137,21 @@ public final class SMPPlugin extends JavaPlugin implements Listener, CommandExec
         }
         if (target != null) enter(target);
     }
-    private void enter(Player p){if(wiping){p.sendMessage("§cSMP wordt momenteel gereset.");return;}long r=remaining(p.getUniqueId());if(r>0){p.sendMessage("§cHardcore cooldown: "+duration(r));return;}Location loc=last.get(p.getUniqueId());if(loc==null || !isSmp(loc.getWorld()))loc=start();if(loc==null){p.sendMessage("§cSMP-wereld niet beschikbaar.");return;}p.teleport(loc);}
+    private void enter(Player p) {
+        if (wiping) {p.sendMessage("§cSMP wordt momenteel gereset.");return;}
+        long r = remaining(p.getUniqueId());
+        if (r > 0) {p.sendMessage("§cHardcore cooldown: " + duration(r));return;}
+        Location loc = last.get(p.getUniqueId());
+        if (!safeSmpLocation(loc)) {
+            last.remove(p.getUniqueId());
+            loc = start();
+        }
+        if (loc == null) {p.sendMessage("§cGeen veilige SMP-spawn gevonden. Neem contact op met een admin.");return;}
+        if (p.teleport(loc)) {
+            p.setFallDistance(0);
+            p.setNoDamageTicks(100);
+        } else p.sendMessage("§cTeleporteren naar SMP mislukt.");
+    }
     private void tick(){if(wiping)return;long now=System.currentTimeMillis();for(Player p:Bukkit.getOnlinePlayers())if(isSmp(p.getWorld())){UUID id=p.getUniqueId();last.put(id,p.getLocation().clone());survival.merge(id,30L,Long::sum);}long left=seasonEnd-now;if(left<=0){beginWipe(false);return;}long seconds=left/1000;for(long warn:List.of(86400L,3600L,600L,60L))if(seconds<=warn && seconds> warn-31)Bukkit.broadcastMessage("§6[SMP] Seizoen eindigt over "+duration(left));saveState();}
     @EventHandler(priority=EventPriority.HIGHEST,ignoreCancelled=true) public void teleport(PlayerTeleportEvent e){Player p=e.getPlayer();if(e.getTo()==null)return;boolean from=isSmp(e.getFrom().getWorld()),to=isSmp(e.getTo().getWorld());if(!from && to && (wiping||remaining(p.getUniqueId())>0)){e.setCancelled(true);p.sendMessage("§cSMP gesloten. Cooldown: "+duration(remaining(p.getUniqueId())));return;}if(from)last.put(p.getUniqueId(),e.getFrom().clone());if(from!=to){boolean target=to;Bukkit.getScheduler().runTask(this,()->{if(p.isOnline()&&isSmp(p.getWorld())==target)switchInventory(p,target);});}}
     @EventHandler public void portal(PlayerPortalEvent e){if(e.getTo()==null)return;World from=e.getFrom().getWorld();if(!isSmp(from))return;World to=e.getTo().getWorld();if(to.getEnvironment()==World.Environment.NETHER && !to.getName().equals(nether())){World n=Bukkit.getWorld(nether());if(n!=null)e.setTo(new Location(n,e.getFrom().getX()/8,80,e.getFrom().getZ()/8));}else if(to.getEnvironment()==World.Environment.THE_END && !to.getName().equals(end())){World n=Bukkit.getWorld(end());if(n!=null)e.setTo(n.getSpawnLocation());}}
