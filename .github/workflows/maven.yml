@@ -19,14 +19,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
+          cache: cache-dependency-path: NLUniverseSMP/pom.xml
 
       - name: Build NLUniverseSMP
-        run: mvn -B clean package --file pom.xml
+        run: run: mvn -B clean package --file NLUniverseSMP/pom.xml
 
       - name: Upload plugin JAR
         uses: actions/upload-artifact@v4
         with:
           name: NLUniverseSMP
-          path: target/*.jar
+          path: path: NLUniverseSMP/target/*.jar
           if-no-files-found: error
