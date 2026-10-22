@@ -1,0 +1,13 @@
+name: NLUniverseSMP
+version: 1.1.0
+main: nl.universe.smp.SMPPlugin
+api-version: '1.21'
+author: NL-Universe
+description: Seizoensgebonden hardcore SMP met supply drops en veilige wipes
+commands:
+  nlsmp:
+    description: NL-Universe SMP
+    usage: /nlsmp <join|joinplate|leave|season|top|status|sethub|wipe|drop|cooldown>
+permissions:
+  nluniverse.smp.admin:
+    default: op
